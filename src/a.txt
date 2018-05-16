@@ -1,0 +1,2 @@
+[C++ Error] extruder.cpp(70): E2247 '_fastcall TStream::SetSize(int)' is not accessible
+[C++ Error] extruder.cpp(86): E2247 '_fastcall TStream::SetSize(int)' is not accessible

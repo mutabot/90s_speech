@@ -1,0 +1,88 @@
+int i, fold_size, fld_start, fld_offset, fld_cnt, seg_offset, seg_cnt, dev;
+ TFPoint fbuf[FOLD_BUF_PCOUNT];
+ TFPoint *fld;
+ TComparator Seg, Fld, Base, Tmp;
+ Source->Position = 0;
+ while (Source->Position != Source->Size)
+ {
+  Source->Seek(-pcount, soFromCurrent);
+  fold_size = Source->Read(fbuf, sizeof(fbuf));
+  fold_size = fold_size / sizeof(TFPoint);
+  fld_start = 0;
+  fld = fbuf;
+  fld_offset = 1;
+  seg_offset = 1;
+  dev = 0;
+  i = 0;
+  while (1)
+  {
+   i++;
+   if (seg_offset >= pcount) // добрались до конца сегмента
+   {
+    dev = dev / i;
+    if ((dev < devpass) && OnSegment) OnSegment(fbuf, fld_offset,
+                             Source->Position / sizeof(TFPoint) + fld_start - fold_size, dev);
+    if (OnProgress) OnProgress(Source->Size, Source->Position);
+    do
+    {
+     fld_start++;
+    } while ( (abs(seg[0].a - fbuf[fld_start].a) > apass) && (fld_start < fold_size - pcount));
+    fld = &fbuf[fld_start];
+    fld_offset = 1;
+    seg_offset = 1;
+    dev = 0;
+    i = 0;
+   }
+   if (fld_start >= fold_size) break;
+   seg_cnt = 1;
+   fld_cnt = 1;
+   Base.Compare(&fld[fld_offset], 1, &seg[seg_offset], 1);
+   Seg = Base;
+   while(seg_offset + seg_cnt < pcount)
+   {
+    Tmp.Compare(&fld[fld_offset], 1, &seg[seg_offset], seg_cnt + 1);
+    if (Tmp < Seg)
+    { Seg = Tmp; seg_cnt++; }
+    else break;
+   }
+   Fld = Base;
+   while(fld_offset + fld_start < fold_size)
+   {
+    Tmp.Compare(&fld[fld_offset], fld_cnt + 1, &seg[seg_offset], 1);
+    if (Tmp < Fld)
+    { Fld = Tmp; fld_cnt++; }
+    else break;
+   }
+
+   if (Fld < Seg)
+   {
+    dev+=Fld.sqr_d;
+    seg_offset++;
+    fld_offset+=fld_cnt;
+   } else {
+    dev+=Seg.sqr_d;
+    seg_offset+=seg_cnt;
+    fld_offset++;
+   }
+  }
+ }
+
+if (lastseg.width > maxwidth)            // too width to be segment
+ {
+  do  {
+   lastseg.width-=fbuf[sptr].m;
+   lastseg.pcount--;
+  } while (++sptr < pcount && (fbuf[sptr-1].a < 0x80 || fbuf[sptr].a > 0x80));
+ }
+
+X5, 1;
+
+X7, 2;
+
+A8, 1; A9, 2;
+
+
+D4, 1; 
+D12, 1; 
+
+D3, 0; 

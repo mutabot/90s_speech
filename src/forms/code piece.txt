@@ -1,0 +1,635 @@
+int __fastcall sign(int s) { if (s > 0) return 1; if (s < 0) return -1; return 0; };
+  unsigned char __fastcall pcm_mod(unsigned char value)
+        {
+         if (value & 0x80) return value&0x7F;
+         else return 0x80 - value;
+        };
+  signed char __fastcall pcm_val(unsigned char value)
+        {
+         if (value & 0x80) return value&0x7F;
+         else return 0 - (0x80 - value);
+        };
+  double __fastcall fpcm_val(double value)
+        {
+         if (value >= 128) return value - 128;
+         else return 0 - (128 - value);
+        };
+  int __fastcall seek_sum(int &from, int sum, int dest_sum)
+        {
+         int d, i = from;
+         while(sum < dest_sum)
+         {
+          i++;
+          d = sum;
+          sum +=fbuf[i].m;
+         };
+        // if (dest_sum - d < sum - dest_sum) { i--; sum=d; }
+         from = i;
+         return sum;
+        };
+  int __fastcall seek_sum_sum(int &from, int sum, int shift) // дает сумму экстремумов
+        {
+         int d = 0, i, sum_sum = 0;
+         for (i = from; sum < shift; i++)
+         {
+          d = sum;
+          sum +=fbuf[i].m;
+          sum_sum+=fbuf[i].a;
+         }
+         if (shift - d < sum - shift) { i--; sum=d; }
+         from = i;
+         return sum_sum;
+        };
+
+//---------------------------------------------------------------------------
+void __fastcall TFolder::search_sample( void )
+{
+ int shift[2], i, sum[2], fptr[2][2], kcnt[2]; // fptr[2][2] -- храним и старые значения
+ unsigned short zero[3] = { 0, 0xFFFF, 0xFF00 }, asum;
+ unsigned char a[64], apos;
+ double ds[2], s[2], ka[2], k;
+ b_ptr = 0;
+ memset(b_tbl, 0, sizeof(b_tbl));
+ for (shift[0] = 52; shift[0] < 80; shift[0]+=2)
+ {
+  fsBlocks->Write(&zero[0], 3);
+  if (shift[0] == 64)
+    fsBlocks->Write(&zero[0], 6);
+  s[1] = s[0] = 0;
+  ds[1] = ds[0] = 0;
+  memset(a, 0xFF, sizeof(a));
+  apos = 0;
+  sum[1] = 0;
+  memset(fptr, 0, sizeof(fptr));
+  fptr[0][0] = -1;
+  sum[0] = seek_sum(fptr[0][0], 0, fbuf[0].m + shift[0]);
+  s[0] = fbuf[fptr[0][0] - 1].a;
+  ds[0] = (double)(fbuf[fptr[0][0]].a - s[0]) / (double)fbuf[fptr[0][0]].m;
+  s[0] = s[0] + ds[0]*(fbuf[fptr[0][0]].m - (sum[0] - fbuf[0].m - shift[0]));
+  sum[1] = fbuf[0].m;
+  fptr[0][1] = fptr[0][0]; // храним старые
+  ka[0] = ka[1] = kcnt[0] = kcnt[1] = 0;
+  for (shift[1] = fbuf[0].m + 1; fptr[0][0] < fold_pos; shift[1]+=4)
+  {
+   fptr[0][1] = fptr[0][0]; // храним старые
+   fptr[1][1] = fptr[1][0]; // значения
+   s[0]+=ds[0];
+   s[1]+=ds[1];
+
+   sum[0] = seek_sum(fptr[0][0], sum[0], shift[1] + shift[0]);
+   sum[1] = seek_sum(fptr[1][0], sum[1], shift[1]);
+   if (fptr[0][0] - fptr[0][1] == 1)
+   {
+    s[0] = fbuf[fptr[0][1]].a;
+    ds[0] = (double)(fbuf[fptr[0][0]].a - s[0]) / (double)fbuf[fptr[0][0]].m;
+   }
+   if (fptr[1][0] - fptr[1][1] == 1)
+   {
+    s[1] = fbuf[fptr[1][1]].a;
+    ds[1] = (double)(fbuf[fptr[1][0]].a - s[1]) / (double)fbuf[fptr[1][0]].m;
+   }
+   k = s[0] - s[1];
+   ka[0] = ka[0] + k;
+   kcnt[0]++;
+   ka[1] = ka[1] - k;
+   kcnt[1]++;
+
+  // a[apos] = s[0];  apos++;
+  // a[apos] = s[1];  apos++;
+   if (fptr[0][0] - fptr[0][1] == 1)
+   {
+    a[apos] = fabs( ka[0]/kcnt[0] ) + fabs(k);
+    apos++;
+    ka[0] = kcnt[0] = 0;
+   }
+
+   if (fptr[1][0] - fptr[1][1] == 1)
+   {
+    a[apos] = fabs( ka[1]/kcnt[1] ) + fabs(k);
+    apos++;
+    ka[1] = kcnt[1] = 0;
+   }
+
+   if (apos > 2)
+   { fsBlocks->Write(a, apos);
+     apos = 0; }
+
+   if ((kcnt[1] != 0) && (kcnt[0] != 0)) continue;
+   asum = 4*a[0];
+   if (a[1] < asum) asum = 4*a[1];
+
+   //  создаем таблицу блоков
+   if ((b_tbl[0][b_ptr] != 0) && (asum < 60)) // идет накопление блока
+   {
+    b_tbl[2][b_ptr] = (b_tbl[2][b_ptr] + asum) / 2;
+    if (b_tbl[3][b_ptr] > asum) b_tbl[3][b_ptr] = asum;  // сохраняем мин значение суммы
+   }
+   if ((b_tbl[0][b_ptr] == 0) && (asum < 50))   // включаем накопление
+   {
+    b_tbl[0][b_ptr] = fptr[1][0];
+    b_tbl[2][b_ptr] = b_tbl[3][b_ptr] = asum;
+   }
+   if ((b_tbl[0][b_ptr] != 0) && (asum > 60))    // заканчиваем блок
+   {
+    if ( (b_tbl[3][b_ptr] < 2) &&  // мин значение достигается
+          (b_tbl[2][b_ptr] < 20) &&  // среднее отклонение
+           (fptr[0][0] - b_tbl[0][b_ptr] > 8) ) // длинна
+    {
+     b_tbl[1][b_ptr] = fptr[0][0] - b_tbl[0][b_ptr];
+     b_tbl[3][b_ptr] = shift[0]; // сохранили сдвиг т.е. параметр периодичности
+     b_ptr++;
+    }
+    else b_tbl[0][b_ptr] = 0; //  выбрасываем
+   }
+  } // for shift[1]
+  if ( (b_tbl[0][b_ptr] != 0) &&
+        (b_tbl[3][b_ptr] < 2) &&
+         (b_tbl[2][b_ptr] < 20) &&
+          (fptr[0][0] - b_tbl[0][b_ptr] > 8) )
+   {
+    b_tbl[1][b_ptr] = fptr[0][0] - b_tbl[0][b_ptr];
+    b_tbl[3][b_ptr] = shift[0]; // сохранили сдвиг т.е. параметр периодичности
+    b_ptr++;
+   }
+   else b_tbl[0][b_ptr] = 0; // выбрасываем блок
+ } // for shift[0]
+ // все! теперь анализ таблицы блоков
+ // используем shift для хранения макс блока
+ bList = new TStringList();
+ int b_cnt = b_ptr, o_shift = -1;
+ AnsiString Line = "";
+ for (i = 0; i <= b_cnt; i++)
+ {
+  if (b_tbl[3][i] != o_shift)
+  {
+   bList->Add(Line);
+   Line = AnsiString(b_tbl[3][i]) + ":: ";
+  }
+  Line = Line + AnsiString(b_tbl[0][i]) + "," + AnsiString(b_tbl[1][i])  + "," + AnsiString(b_tbl[2][i]) + "; ";
+  o_shift = b_tbl[3][i];
+ }
+ bList->SaveToFile("pcm\\blist.txt");
+ delete bList;
+ int j = 0;
+ for (i = 0; i < b_cnt; i++)
+ {
+/*  for (j = j; b_tbl[2][j] > 95; j++) b_cnt--;
+  for (int k = 0; k < 4; k++) b_tbl[k][i] = b_tbl[k][j];
+  j++;*/
+  fsBlocks->Write(&fbuf[b_tbl[0][i]], b_tbl[1][i]);
+  fsBlocks->Write(&zero[1], 1);
+  fsBlocks->Write(&b_tbl[2][i], 1);
+  fsBlocks->Write(&zero[1], 1);
+ }
+ for (i = b_cnt; i < b_ptr; i++)
+  for (j = 0; j < 4; j++) b_tbl[j][i] = 0;
+ b_ptr = b_cnt;
+}
+//---------------------------------------------------------------------------
+
+
+int __fastcall TMorph::Morph(TSample *dst_smp, int stable, int steps)
+{
+ int i, j, k, l, cur_len = 0, dst_len = 0, mdif;
+ double dm[4], step, lk[2], w, shift, a[3], ak, ov[3], d[3];
+ double s_len = 0;
+ memset(wrk, 0, sizeof(wrk));
+ load_sample(dst, dst_smp);
+ for (i = 1; i < cur_smp.pcount; i++) cur_len+=cur[i].m;
+ for (i = 1; i < dst_smp->pcount; i++) dst_len+=dst[i].m;
+ mdif = dst_len - cur_len;
+ s_len = ((double)cur_len + (double)mdif/2.0)*(double)stable;
+ for ( k = 1; k <= steps; k++ )
+ {
+  l = 0;
+  if (k <= stable) step = (double)k/(double)stable;
+  lk[0] = ((double)cur_len + step*mdif) / (double)cur_len;
+  lk[1] = ((double)cur_len + step*mdif) / (double)dst_len;
+  dm[0] = dm[1] = dm[2] = 0;
+  ov[0] = cur[0].a; ov[1] = dst[0].a;
+  j = 1; i = 1;
+  d[0] = cur[i].a - ov[0];
+  d[1] = dst[j].a - ov[1];
+  while ((j < dst_smp->pcount) && (i < cur_smp.pcount))
+  {
+   if (dm[0] + lk[0] * (double)cur[i].m < dm[1] + lk[1] * (double)dst[j].m)
+   {
+    dm[0]+=lk[0] * (double)cur[i].m;
+    dm[3] = dm[0];
+    ov[0] = cur[i].a;
+    shift = dm[0] - dm[1];
+    a[0] = cur[i].a;
+    i++;
+    d[0] = cur[i].a - ov[0];
+    ov[2] = ov[1];
+    d[2] = d[1];
+    w = lk[1] * (double)dst[j].m;
+    ak = step;
+   } else {
+    dm[1]+=lk[1] * (double)dst[j].m;
+    dm[3] = dm[1];
+    ov[1] = dst[j].a;
+    shift = dm[1] - dm[0];
+    a[0] = dst[j].a;
+    j++;
+    d[1] = dst[j].a - ov[1];
+    ov[2] = ov[0];
+    d[2] = d[0];
+    w = lk[0] * (double)cur[i].m;
+    ak = 1 - step;
+   }
+   wrk[l].m = round(dm[3] - dm[2]);
+   if (wrk[l].m == 0) continue;
+   dm[2] = round(dm[3]);
+   a[1] = ov[2] + d[2]*( (1 + sin(-M_PI_2 + M_PI*shift/w)) / 2 );
+   a[2] = a[0] - (a[0] - a[1])*ak;
+   wrk[l].a = round(a[2]);
+   l++;
+  }
+  fsResult->Write(wrk, l*sizeof(TFPoint));
+ }
+ memmove(&cur_smp, dst_smp, sizeof(TSample));
+ if (stable <= steps)
+ {
+  load_sample(cur, &cur_smp);
+  return 0;
+ }
+ cur_smp.pcount = l;
+ memmove(cur, wrk, l*sizeof(TFPoint));
+ return cur_smp.pcount;
+}
+//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+int __fastcall TMorph::Morph(int dst_idx, int steps, int stable)
+{
+ int i, j, k, l, cur_len = 0, dst_len = 0, bptr = 0;
+ double lk[2], w[2], amp[2], shift[2] = {0,0}, step[2], dstep;
+ int ov[2], d[2], mdif, clen;
+ load_samples(dst_idx);
+
+ for (i = 1; i < s_index[cur_idx]; i++) cur_len+=cur[i].m;
+ for (i = 1; i < s_index[dst_idx]; i++) dst_len+=dst[i].m;
+ mdif = dst_len - cur_len;
+ step[1] = 0;
+ for (k = 1; k <= steps + stable; k++)
+ {
+  i = 0; j = 0;
+  shift[0] = 0;
+  shift[1] = 0;
+  if (k <= steps) step[0] = (double)k/(double)steps;
+  clen = cur_len + step[0]*mdif;
+  dstep = step[0] - step[1];
+  for (l = 1; 1; l++)
+  {
+   step[0] = step[1] + dstep*l/clen;
+   lk[0] = ((double)cur_len + step[0]*mdif) / (double)cur_len;
+   lk[1] =  (double)cur_len / ((double)cur_len + step[0]*mdif);
+   if (shift[0] <= 0)
+   {
+    ov[0] = cur[i].a;
+    i++;
+    if (i == s_index[cur_idx]) break;
+    shift[0] = (double)cur[i].m * lk[0];
+    w[0] = M_PI / shift[0]; // 0 - пи
+    d[0] = cur[i].a - ov[0];
+   }
+   if (shift[1] <= 0)
+   {
+    ov[1] = dst[j].a;
+    j++;
+    if (j == s_index[dst_idx]) break;
+    shift[1] = (double)dst[j].m * lk[1];
+    w[1] = M_PI / shift[1]; // 0 - пи
+    d[1] = dst[j].a - ov[1];
+   }
+   shift[0]-=1;
+   shift[1]-=1;
+   amp[0] = ov[0] + d[0]*( (1 + sin(M_PI_2 + w[0]*(double)shift[0])) / 2 );
+   amp[1] = ov[1] + d[1]*( (1 + sin(M_PI_2 + w[1]*(double)shift[1])) / 2 );
+   buf[bptr] = amp[0] + ( amp[1] - amp[0] )*step[0];
+   bptr++;
+  }
+  step[1] = step[0];
+ }
+ fsResult->Write(buf, bptr);
+ cur_idx = dst_idx;
+ return 0;
+}
+//---------------------------------------------------------------------------
+
+int __fastcall TMorph::Morph(int dst_idx, int steps)
+{
+ int i, j, k, s, cur_len = 0, dst_len = 0, wrk_sum[2] = {0,0};
+ double len_k, w[2], a_k[64], dst_gap, shift[2] = {0,0};
+ int ov[2], d[2], mdiff;
+ for (i = 0; i < 64; i++) a_k[i] = 0;
+ load_samples(dst_idx);
+
+ for (i = 1; i < s_index[cur_idx]; i++) cur_len+=cur[i].m;
+ for (i = 1; i < s_index[dst_idx]; i++) dst_len+=dst[i].m;
+ len_k = (double)cur_len / (double)dst_len;
+ k = 0;
+ wrk[k].a = cur[k].a; wrk[k].m = cur[k].m;
+ a_k[k] = (double)cur[k].a / (double)dst[k].a;
+ ov[0] = cur[k].a;
+ ov[1] = dst[k].a;
+ j = 1; i = 1;
+ w[0] = M_PI / (double)cur[i].m; // 0 - пи
+ d[0] = cur[i].a - ov[0];
+ w[1] = M_PI / (double)dst[j].m; // 0 - пи
+ d[1] = dst[j].a - ov[1];
+ k++;
+ shift[0] = cur[k].m;
+ shift[1] = dst[k].m*len_k;
+ for (s = 0; s <= cur_len; s++)
+ {
+  if (s == (int)shift[0])
+  {
+   cur[i].m-=wrk_sum[0];
+   if (cur[i].m > 0)
+   {
+    wrk[k].m =cur[i].m;
+    wrk_sum[1]+=(double)wrk[k].m / len_k;
+    mdiff = dst[j].m*len_k - wrk_sum[1];
+    if (mdiff < 3) { wrk[k].m+=mdiff; wrk_sum[1] = dst[j].m*len_k; }
+    wrk[k].a = cur[i].a;
+    dst_gap = ov[1] + d[1]*( (1 + sin(-M_PI_2 + w[1]*wrk_sum[1])) / 2 );
+    a_k[k] = (dst_gap - (double)wrk[k].a) / steps;
+    k++;
+   }
+   ov[0] = cur[i].a;
+   i++;
+   w[0] = M_PI / (double)cur[i].m; // 0 - пи
+   d[0] = cur[i].a - ov[0];
+   wrk_sum[0] = 0;
+   shift[0]+=cur[i].m;
+  }
+  if (s == (int)shift[1])
+  {
+   dst[j].m-=wrk_sum[1];
+   if (dst[j].m > 0) {
+    wrk[k].m =dst[j].m*len_k;
+    wrk_sum[0]+=wrk[k].m;
+    mdiff = cur[i].m - wrk_sum[0];
+    if (mdiff < 3) { wrk[k].m+=mdiff; wrk_sum[0] = cur[i].m; }
+    wrk[k].a = ov[0] + d[0]*( (1 + sin(-M_PI_2 + w[0]*wrk_sum[0])) / 2 );
+    a_k[k] = ((double)dst[j].a - (double)wrk[k].a) / steps;
+    k++;
+   }
+   ov[1] = dst[j].a;
+   j++;
+   w[1] = M_PI / (double)dst[j].m*len_k; // 0 - пи
+   d[1] = dst[j].a - ov[1];
+   wrk_sum[1] = 0;
+   shift[1]+=dst[j].m*len_k;
+  }
+ }
+ load_samples(dst_idx);
+ for (i = 1; i <= steps / 4; i++) fsResult->Write(&wrk[1], (k - 1)*sizeof(TFPoint));
+ dst_gap = (double)(dst_len - cur_len) / (double)steps;
+ for (i = 1; i <= steps; i++)
+ {
+  for (j = 1; j < k; j++)
+  {
+   cur[j].a = wrk[j].a + a_k[j]*i;
+   if ((int)wrk[j].m + dst_gap*i <= 0)
+   {
+    memmove(&cur[j], &cur[j+1], k - j);
+    memmove(&wrk[j], &wrk[j+1], k - j);
+    memmove(&a_k[j], &a_k[j+1], k - j);
+    k--;
+   }
+   else cur[j].m = wrk[j].m + dst_gap*i;
+  }
+  fsResult->Write(&cur[1], (k - 1)*sizeof(TFPoint));
+ }
+ for (i = 1; i <= steps / 4; i++) fsResult->Write(&dst[1], (s_index[dst_idx]- 1)*sizeof(TFPoint));
+ cur_idx = dst_idx;
+ return 0;
+}
+//---------------------------------------------------------------------------
+
+
+8, 0, 12, 2, 4
+2, 2, 12, 1, 8
+   continue;
+   // проводим акт сравнения
+   if ( abs(fbuf[0][fptr[0][0]] - fbuf[0][fptr[1][0]]) <=
+        abs(fbuf[1][fptr[0][0]] - fbuf[1][fptr[1][0]]) ) i = 0;
+   else i = 1;
+
+  /* fo[0] = fbuf[i][fptr[0][0]]; //  со сдвигом
+   fo[1] = fbuf[i][fptr[1][0]]; //  от нуля*/
+   //area[apos] = abs(sum[0] - shift[0] - sum[1]); // вносим значение частотного/временного разрыва
+   //apos++;
+   if (s[0] > s[1]) a100 = s[0];
+   else a100 = s[1];
+   if (a100 != 0) {
+     ka = 255.0 / (double)a100; // 100% == FF
+     area[apos] = ka*(double)abs(s[0] - s[1]);
+   }
+   else area[apos] = 0x80;
+   apos++;
+   if (apos == 16)
+   {
+    apos = 0;
+    aready = true;
+    fsBlocks->Write(area, 16);
+   }
+   s[0] = s[1] = 0;
+   continue;
+
+ /*while (b_cnt > 0)
+ {
+  shift[0] = shift[1] = 0;
+  for (i = 0; i < b_ptr; i++)
+  {
+   if (b_tbl[i][2] > 95) {  b_tbl[i][2] = -1; continue; } // уже обработан
+   if (b_tbl[i][2] < 0)  continue;  //
+   if (b_tbl[i][1] > shift[0])
+   {
+    shift[0] = b_tbl[i][1];
+    shift[1] = i;
+   }
+  }
+  b_tbl[shift[1]][2] = -2; b_cnt--;
+  for (int k = 0; k < b_ptr; k++)
+  {
+   if (b_tbl[k][2] < 0) continue;
+   if (b_tbl[k][0] >= b_tbl[shift[1]][0]) // разрешаем склейку
+   {
+    if (b_tbl[k][0] + b_tbl[k][1] <= b_tbl[shift[1]][0] + b_tbl[shift[1]][1]) // блок внутри блока
+    { b_tbl[k][2] = -1; b_cnt--; continue; }
+    b_tbl[shift[1]][1] = b_tbl[k][0] + b_tbl[k][1] - b_tbl[shift[1]][0]; // перенесли конец
+    b_tbl[k][2] = -1; b_cnt--;
+    continue;
+   }
+   if (b_tbl[k][0] + b_tbl[k][1] >= b_tbl[shift[1]][0])
+   {
+    b_tbl[shift[1]][0] = b_tbl[k][0]; // перенесли начало
+    b_tbl[k][2] = -1; b_cnt--;
+   }
+  }
+ } */
+
+
+//---------------------------------------------------------------------------
+int __fastcall TMorph::Morph(int src_h, int src_idx, int trans_cnt, int dst_idx, int dst_t)
+{
+ int i, i1, offset[2] = { 64, 64 }, fcnt[2], res_cnt = 0;
+ double xfactor[64], yfactor[64], da, dm, dx;
+ memset(fbuf, 0, sizeof(fbuf));
+ if (s_index[src_idx] < s_index[dst_idx]) { i = 0; i1 = 1; }
+ else { i = 1; i1 = 0; }
+
+ for (int j = 0; j < 64; j++)
+ {
+  if (j < src_idx) offset[i]+= s_index[j];
+  if (j < dst_idx) offset[i1]+= s_index[j];
+ }
+ // 1. уравниваем кол-во точек в массивах fbuf
+ if (s_index[src_idx] < s_index[dst_idx])
+ {
+  fcnt[0] = s_index[src_idx];
+  fcnt[1] = s_index[dst_idx];
+ } else {
+  fcnt[1] = s_index[src_idx];
+  fcnt[0] = s_index[dst_idx];
+ }
+ msSamples->Seek(offset[i], soFromBeginning); //  теперь понятно где не хватает
+ msSamples->Read(&fbuf[i], fcnt[i]); //  точек
+ msSamples->Seek(offset[i1], soFromBeginning);//
+ msSamples->Read(&fbuf[i1], fcnt[i1]);//
+ // теперь собственно морфинг
+ fcnt[0] = fcnt[0] / 2;
+ fcnt[1] = fcnt[1] / 2;
+ // вставляем голову
+ dx = M_PI / 60;
+ for (int k = 1; k <= src_h; k++)
+ {
+  da = sin(M_PI_2*k/src_h);
+  dm = 1 - sin(dx*k/src_h);
+  for (int j = 1; j < fcnt[i]; j++)
+  {
+   rfold[res_cnt].a = fbuf[i][j].a*da;
+   rfold[res_cnt].m = fbuf[i][j].m*dm;
+   if (rfold[res_cnt].m == 0) rfold[res_cnt].m = 1;
+   res_cnt++;
+  }
+ }
+ mark_nodes(fcnt[0], fcnt[1]);
+ // 2. подсчет добавок
+ for (int j = 1; j < fcnt[1]; j++)
+ {
+  xfactor[j] = ((double)fbuf[i1][j].a - (double)fbuf[i][j].a) / (double)trans_cnt;
+  yfactor[j] = ((double)fbuf[i1][j].m - (double)fbuf[i][j].m) / (double)trans_cnt;
+ }
+ // вставляем переход
+ for (int k = 1; k <= trans_cnt; k++)
+ {
+  da = 1.3*sin(M_PI_2*k/src_h);
+  dm = 1 + sin(dx*k/src_h);
+  for (int j = 1; j < fcnt[1]; j++)
+  {
+   rfold[res_cnt].a = ((double)fbuf[i][j].a + xfactor[j]*k)*da;
+   rfold[res_cnt].m = ((double)fbuf[i][j].m + yfactor[j]*k)*dm;
+   if (rfold[res_cnt].m == 0) rfold[res_cnt].m = 1;
+   res_cnt++;
+  }
+ }
+ // вставляем хвост
+ for (int k = 0; k < dst_t; k++)
+  for (int j = 1; j < fcnt[i1]; j++)
+  {
+   rfold[res_cnt].a = fbuf[i1][j].a;
+   rfold[res_cnt].m = fbuf[i1][j].m;
+   res_cnt++;
+  }
+ fsResult->Write(rfold, res_cnt*sizeof(TFPoint));
+ return res_cnt;
+}
+//---------------------------------------------------------------------------
+void __fastcall TMorph::mark_nodes( int min_cnt, int max_cnt )
+{
+ struct toverset
+ {
+  int           idx;
+  double        err;
+ } overset[64];
+ memset(overset, 0, sizeof(overset));
+ TFPoint mnodes[64];
+ int i, j, ov, d, rep_cnt;
+ double err, sk, s[3] = { 0, 0, 0 };
+ double pi = 3.1415926535897932, _pi_2 = -1.57079632;
+ // находим sk
+ for (i = 1; i < min_cnt; i++) s[0]+=fbuf[0][i].m;
+ for (i = 1; i < max_cnt; i++) s[1]+=fbuf[1][i].m;
+ sk = s[1] / s[0];
+ // заносим ближайшие точки
+ for (i = 0; i < 64; i++) overset[i].err = 999999;
+ s[0] = 0;
+ for (i = 1; i < min_cnt - 1; i++)
+ {
+  s[0]+=fbuf[0][i].m;
+  s[1]=0;
+  for (j = 1; j < max_cnt - 1; j++)
+  {
+   s[1]+=fbuf[1][j].m;
+  // err = abs(fbuf[0][i].a - fbuf[1][j].a)*abs(fbuf[0][i].a - fbuf[1][j].a);
+   err= fabs(s[0]*sk - s[1])*fabs(s[0]*sk - s[1]);
+   if (overset[i].err > err) { overset[i].err = err; overset[i].idx = j; }
+  }
+ }
+ overset[min_cnt - 1].idx = max_cnt - 1;
+ // сортируем
+ bool bSort;
+ do {
+  i = 1;
+  bSort = false;
+  for (j = 1; ((j < max_cnt) && (i < min_cnt)); j++)
+  {
+   rep_cnt = 0;
+   while (overset[i].idx == j)
+   {
+    rep_cnt++;
+    if (rep_cnt > 1) // повтор
+    {
+     i--; bSort = true;
+     if (i == j) i++;
+     if (i < j ) { overset[i].idx--; j--; }
+     if (i > j ) { overset[i].idx++; j++; }
+    }
+    i++;
+   }
+  }
+ } while (bSort);
+ // теперь вставляем точки
+ err = 0;
+ i = 1;
+ s[0] = fbuf[0][i].m;
+ s[1] = s[2] = 0;
+ for (j = 1; j < max_cnt; j++)
+ {
+  s[1]+= fbuf[1][j].m;
+  if (j == overset[i].idx)
+  {
+   mnodes[j].a = fbuf[0][i].a;
+   mnodes[j].m = ceil(fbuf[0][i].m - err);
+   i++;
+   s[0]+= fbuf[0][i].m;
+   s[2] = fbuf[0][i].m;
+   err = 0;
+   continue;
+  }
+  err = s[0] - s[1] / sk;
+  mnodes[j].m = ceil(s[2] - err);
+  s[2] = err;
+  err = fbuf[0][i].m - err;
+  ov = fbuf[0][i - 1].a;
+  d =  fbuf[0][i].a - ov;
+  mnodes[j].a = ov + d*( (1 + sin(_pi_2 + pi*err/(double)fbuf[0][i].m)) / 2 );
+ }
+ for (j = 1; j < max_cnt; j++) fbuf[0][j] = mnodes[j];
+}
+//---------------------------------------------------------------------------
+
